@@ -34,3 +34,21 @@ unit_parsePostQualified = do
                     Import "Data.Maybe" Nothing,
                     Import "Data.Map" Nothing,
                     Import "Data.List" Nothing] got
+
+unit_parseCppImports :: IO ()
+unit_parseCppImports = do
+    got <- parseFileImports "testData/parseTests/CppImports.hs"
+    assertEqual "" [Import "Data.Foo" Nothing,
+                    Import "Data.Bar" Nothing,
+                    Import "Data.Baz" Nothing] got
+
+unit_parseMultiLineModule :: IO ()
+unit_parseMultiLineModule = do
+    got <- parseFileImports "testData/parseTests/MultiLineModule.hs"
+    assertEqual "" [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing] got
+
+unit_parseNoImports :: IO ()
+unit_parseNoImports = do
+    got <- parseFileImports "testData/parseTests/NoImports.hs"
+    assertEqual "" [] got
