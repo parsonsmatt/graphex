@@ -15,3 +15,22 @@ unit_parseSomeFile = do
                     Import "Data.Maybe" Nothing,
                     Import "This.Though" Nothing,
                     Import "Data.List" (Just "base")] got
+
+unit_parseMultiLineImports :: IO ()
+unit_parseMultiLineImports = do
+    got <- parseFileImports "testData/parseTests/MultiLineImports.hs"
+    assertEqual "" [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing,
+                    Import "Data.Set" Nothing,
+                    Import "Data.Maybe" Nothing,
+                    Import "Data.List" Nothing] got
+
+unit_parsePostQualified :: IO ()
+unit_parsePostQualified = do
+    got <- parseFileImports "testData/parseTests/PostQualified.hs"
+    assertEqual "" [Import "Data.Text" Nothing,
+                    Import "Data.Map.Strict" Nothing,
+                    Import "Data.Set" Nothing,
+                    Import "Data.Maybe" Nothing,
+                    Import "Data.Map" Nothing,
+                    Import "Data.List" Nothing] got

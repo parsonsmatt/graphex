@@ -85,10 +85,13 @@ stripBlockComments = go False
                           in TL.isPrefixOf "{-" s && not (TL.isPrefixOf "{-#" s)
 
 -- | Lines that can appear in the file header before code begins.
+-- Includes indented lines (spaces/tabs) which are import list continuations.
 isHeaderLine :: TL.Text -> Bool
 isHeaderLine l =
     isImportLine l
     || TL.null (TL.strip l)
+    || TL.isPrefixOf " "      l
+    || TL.isPrefixOf "\t"     l
     || TL.isPrefixOf "--"     s
     || TL.isPrefixOf "{-#"    s
     || TL.isPrefixOf "module " l
