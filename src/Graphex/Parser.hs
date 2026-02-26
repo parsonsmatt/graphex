@@ -17,10 +17,8 @@ import           Data.Maybe           (mapMaybe)
 import           Data.String          (IsString)
 import           Data.Text            (Text)
 import qualified Data.Text            as T
-import qualified Data.Text.Lazy       as TL
-import qualified Data.Text.Lazy.IO    as TLIO
+import qualified Data.Text.IO         as TIO
 import           Data.Void
-import           System.IO            (withFile, IOMode(ReadMode))
 
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
@@ -57,53 +55,33 @@ parseImportLine line =
     Left _  -> Nothing
     Right x -> Just x
 
--- | Extract imports from lazy text using line-based scanning.
+-- | Extract imports from strict text using line-based scanning.
 --
--- Splits into lines, strips block comments, takes only the file header
--- (up to the first line of code), then parses the import lines.
--- With lazy IO, only the top of the file is read from disk.
-extractImports :: TL.Text -> [Import]
-extractImports = mapMaybe (parseImportLine . TL.toStrict)
+-- Filters to lines starting with "import " and parses each one.
+-- Block comments are stripped first to avoid false positives.
+extractImports :: Text -> [Import]
+extractImports = mapMaybe parseImportLine
                . filter isImportLine
-               . takeWhile isHeaderLine
                . stripBlockComments
-               . TL.lines
+               . T.lines
 
 -- | Remove lines that fall inside block comments.
-stripBlockComments :: [TL.Text] -> [TL.Text]
+stripBlockComments :: [Text] -> [Text]
 stripBlockComments = go False
     where
         go _ [] = []
         go True (l:ls)
-            | TL.isInfixOf "-}" l = go False ls
-            | otherwise           = go True ls
+            | T.isInfixOf "-}" l = go False ls
+            | otherwise          = go True ls
         go False (l:ls)
-            | isOpenComment l = go (not $ TL.isInfixOf "-}" l) ls
+            | isOpenComment l = go (not $ T.isInfixOf "-}" l) ls
             | otherwise       = l : go False ls
 
-        isOpenComment l = let s = TL.stripStart l
-                          in TL.isPrefixOf "{-" s && not (TL.isPrefixOf "{-#" s)
+        isOpenComment l = let s = T.stripStart l
+                          in T.isPrefixOf "{-" s && not (T.isPrefixOf "{-#" s)
 
--- | Lines that can appear in the file header before code begins.
--- Includes indented lines (spaces/tabs) which are import list continuations.
-isHeaderLine :: TL.Text -> Bool
-isHeaderLine l =
-    isImportLine l
-    || TL.null (TL.strip l)
-    || TL.isPrefixOf " "      l
-    || TL.isPrefixOf "\t"     l
-    || TL.isPrefixOf "--"     s
-    || TL.isPrefixOf "{-#"    s
-    || TL.isPrefixOf "module " l
-    || TL.isPrefixOf "#"      s
-    where s = TL.stripStart l
-
-isImportLine :: TL.Text -> Bool
-isImportLine = TL.isPrefixOf "import "
+isImportLine :: Text -> Bool
+isImportLine = T.isPrefixOf "import "
 
 parseFileImports :: FilePath -> IO [Import]
-parseFileImports fp =
-  withFile fp ReadMode $ \h -> do
-    contents <- TLIO.hGetContents h
-    let !imports = extractImports contents
-    pure imports
+parseFileImports fp = extractImports <$> TIO.readFile fp

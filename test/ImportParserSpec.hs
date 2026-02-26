@@ -52,3 +52,10 @@ unit_parseNoImports :: IO ()
 unit_parseNoImports = do
     got <- parseFileImports "testData/parseTests/NoImports.hs"
     assertEqual "" [] got
+
+unit_parseWhereOnOwnLine :: IO ()
+unit_parseWhereOnOwnLine = do
+    got <- parseFileImports "testData/parseTests/WhereOnOwnLine.hs"
+    assertEqual "" [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing,
+                    Import "Data.Set" Nothing] got
