@@ -30,8 +30,7 @@ import qualified Data.Vector            as V
 import           Data.Yaml.Include      (decodeFileEither)
 import           System.Directory       (doesDirectoryExist, doesFileExist,
                                          listDirectory)
-import           System.FilePath        (dropExtension, makeRelative,
-                                         normalise, (</>))
+import           System.FilePath        (normalise, (</>))
 import           UnliftIO.Async         (pooledMapConcurrentlyN)
 
 -- | Top-level package.yaml structure
@@ -92,10 +91,19 @@ data HpackDiscoverOpts = HpackDiscoverOpts
 -- | Convert a file path relative to a source directory into a module name.
 -- e.g. pathToModuleName "src" "src/Graphex/Core.hs" == "Graphex.Core"
 pathToModuleName :: FilePath -> FilePath -> ModuleName
-pathToModuleName srcDir fp =
-    ModuleName $ T.pack $ map (\c -> if c == '/' || c == '\\' then '.' else c) $ dropExtension relative
+pathToModuleName srcDir fp = pathToModuleNameText (T.pack srcDir) (T.pack fp)
+
+-- | Text-based version that avoids String operations entirely.
+-- Strips the source dir prefix, drops ".hs", replaces '/' with '.'.
+pathToModuleNameText :: Text -> Text -> ModuleName
+pathToModuleNameText srcDir fp =
+    ModuleName $ T.map (\c -> if c == '/' || c == '\\' then '.' else c) relative
   where
-    relative = makeRelative srcDir fp
+    -- Strip "srcDir/" prefix, then drop ".hs" suffix
+    stripped = case T.stripPrefix srcDir fp of
+      Just rest -> T.dropWhile (== '/') rest
+      Nothing   -> fp
+    relative = fromMaybe stripped $ T.stripSuffix ".hs" stripped
 
 -- | Recursively find all .hs files under a directory, excluding specified subdirectories.
 findHsFiles :: FilePath -> IO [FilePath]
@@ -183,7 +191,7 @@ discoverHpackModules HpackDiscoverOpts{..} yamlFile = do
       let srcDirFP = T.unpack gsSrcDir
       hsFiles <- findHsFilesExcluding srcDirFP (V.toList $ V.map T.unpack gsExcludeDirs)
       let excludeNorms = V.map (normalise . T.unpack) gsExcludeFiles
-      pure [ Module { name = pathToModuleName srcDirFP f, path = ModuleFile f }
+      pure [ Module { name = pathToModuleNameText gsSrcDir (T.pack f), path = ModuleFile f }
            | f <- hsFiles
            , normalise f `V.notElem` excludeNorms
            ]
