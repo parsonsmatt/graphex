@@ -43,6 +43,7 @@ dependencies:
 - blaze-markup
 - blaze-html
 - hable
+- vector
 - yaml
 
 library:

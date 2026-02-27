@@ -18,14 +18,15 @@ import           Control.Monad          (forM)
 import           Data.Aeson             (FromJSON (..), Value (..), withObject,
                                          (.:?))
 import           Data.Aeson.Types       (Parser, typeMismatch)
-import           Data.List              (isPrefixOf, isSuffixOf)
+import           Data.List              (isSuffixOf)
 import           Data.List.NonEmpty     (NonEmpty)
 import           Data.Map.Strict        (Map)
 import qualified Data.Map.Strict        as Map
 import           Data.Maybe             (catMaybes, fromMaybe)
 import           Data.Semigroup.Foldable
-import           Data.String            (fromString)
 import qualified Data.Text              as T
+import           Data.Text              (Text)
+import qualified Data.Vector            as V
 import           Data.Yaml.Include      (decodeFileEither)
 import           System.Directory       (doesDirectoryExist, doesFileExist,
                                          listDirectory)
@@ -36,27 +37,27 @@ import           UnliftIO.Async         (pooledMapConcurrentlyN)
 -- | Top-level package.yaml structure
 data PackageYaml = PackageYaml
   { pyLibrary           :: Maybe ComponentConfig
-  , pyInternalLibraries :: Map String ComponentConfig
-  , pyExecutables       :: Map String ExecutableConfig
-  , pyTests             :: Map String ExecutableConfig
+  , pyInternalLibraries :: Map Text ComponentConfig
+  , pyExecutables       :: Map Text ExecutableConfig
+  , pyTests             :: Map Text ExecutableConfig
   }
 
 data ComponentConfig = ComponentConfig
-  { ccSourceDirs     :: [FilePath]
-  , ccExposedModules :: Maybe [String]
-  , ccOtherModules   :: Maybe [String]
+  { ccSourceDirs     :: V.Vector Text
+  , ccExposedModules :: Maybe (V.Vector Text)
+  , ccOtherModules   :: Maybe (V.Vector Text)
   }
 
 data ExecutableConfig = ExecutableConfig
-  { ecSourceDirs    :: [FilePath]
-  , ecMain          :: Maybe String
-  , ecOtherModules  :: Maybe [String]
+  { ecSourceDirs    :: V.Vector Text
+  , ecMain          :: Maybe Text
+  , ecOtherModules  :: Maybe (V.Vector Text)
   }
 
 -- | Handles hpack's flexible source-dirs: can be a single string or a list
-parseSourceDirs :: Value -> Parser [FilePath]
-parseSourceDirs (String s) = pure [T.unpack s]
-parseSourceDirs (Array a)  = traverse parseJSON (foldr (:) [] a)
+parseSourceDirs :: Value -> Parser (V.Vector Text)
+parseSourceDirs (String s) = pure (V.singleton s)
+parseSourceDirs (Array a)  = traverse parseJSON a
 parseSourceDirs v          = typeMismatch "String or Array" v
 
 instance FromJSON PackageYaml where
@@ -69,14 +70,14 @@ instance FromJSON PackageYaml where
 
 instance FromJSON ComponentConfig where
   parseJSON = withObject "ComponentConfig" $ \o -> do
-    ccSourceDirs <- fromMaybe ["."] <$> (o .:? "source-dirs" >>= traverse parseSourceDirs)
+    ccSourceDirs <- fromMaybe (V.singleton ".") <$> (o .:? "source-dirs" >>= traverse parseSourceDirs)
     ccExposedModules <- o .:? "exposed-modules"
     ccOtherModules <- o .:? "other-modules"
     pure ComponentConfig{..}
 
 instance FromJSON ExecutableConfig where
   parseJSON = withObject "ExecutableConfig" $ \o -> do
-    ecSourceDirs <- fromMaybe ["."] <$> (o .:? "source-dirs" >>= traverse parseSourceDirs)
+    ecSourceDirs <- fromMaybe (V.singleton ".") <$> (o .:? "source-dirs" >>= traverse parseSourceDirs)
     ecMain <- o .:? "main"
     ecOtherModules <- o .:? "other-modules"
     pure ExecutableConfig{..}
@@ -92,7 +93,7 @@ data HpackDiscoverOpts = HpackDiscoverOpts
 -- e.g. pathToModuleName "src" "src/Graphex/Core.hs" == "Graphex.Core"
 pathToModuleName :: FilePath -> FilePath -> ModuleName
 pathToModuleName srcDir fp =
-    fromString $ map (\c -> if c == '/' || c == '\\' then '.' else c) $ dropExtension relative
+    ModuleName $ T.pack $ map (\c -> if c == '/' || c == '\\' then '.' else c) $ dropExtension relative
   where
     relative = makeRelative srcDir fp
 
@@ -120,37 +121,55 @@ findHsFilesExcluding dir excludeDirs = do
 
 -- | Spec for globbing a source directory
 data GlobSpec = GlobSpec
-  { gsSrcDir       :: FilePath
-  , gsExcludeDirs  :: [FilePath]  -- subdirs that are also source dirs
-  , gsExcludeFiles :: [FilePath]  -- specific files to skip (e.g. exe main)
+  { gsSrcDir       :: Text
+  , gsExcludeDirs  :: V.Vector Text  -- subdirs that are also source dirs
+  , gsExcludeFiles :: V.Vector Text  -- specific files to skip (e.g. exe main)
   }
+
+-- | Convert a Text module name to a relative file path (as Text).
+-- e.g. "Graphex.Core" -> "Graphex/Core.hs"
+moduleNameToRelPath :: Text -> Text
+moduleNameToRelPath modName = T.replace "." "/" modName <> ".hs"
+
+-- | Join a directory and filename as Text using "/"
+(</+>) :: Text -> Text -> Text
+dir </+> file = dir <> "/" <> file
+infixr 5 </+>
 
 -- | Discover modules from a package.yaml file.
 -- Uses explicit module lists when available, falls back to globbing source dirs.
 discoverHpackModules :: HpackDiscoverOpts -> FilePath -> IO [Module]
 discoverHpackModules HpackDiscoverOpts{..} yamlFile = do
   pkg <- either (fail . show) pure =<< decodeFileEither yamlFile
-  let (dirsToGlob, explicitModules) = partitionEithers $ mconcat
-        [ discoverLibrary Nothing (pyLibrary pkg)
-        , discoverInternalLibraries (pyInternalLibraries pkg)
-        , discoverExecutables (pyExecutables pkg)
-        , discoverTests (pyTests pkg)
-        ]
+  let results = discoverLibrary Nothing (pyLibrary pkg)
+        V.++ discoverInternalLibraries (pyInternalLibraries pkg)
+        V.++ discoverExecutables (pyExecutables pkg)
+        V.++ discoverTests (pyTests pkg)
+
+  let (dirsToGlob, explicitModules) = V.partition isLeft results
 
   -- Validate explicit modules (check files exist)
-  validated <- catMaybes <$> pooledMapConcurrentlyN hpackNumJobs validateModule explicitModules
+  validated <- catMaybes <$> pooledMapConcurrentlyN hpackNumJobs
+    (validateModule . fromRight) (V.toList $ V.filter (not . isLeft) results)
 
   -- Glob source directories for .hs files
-  globbed <- fmap concat $ pooledMapConcurrentlyN hpackNumJobs globSourceDir dirsToGlob
+  globbed <- fmap concat $ pooledMapConcurrentlyN hpackNumJobs
+    (globSourceDir . fromLeft) (V.toList dirsToGlob)
 
   pure $ validated ++ globbed
 
   where
+    isLeft (Left _) = True
+    isLeft _        = False
+
+    fromLeft (Left a)  = a
+    fromLeft (Right _) = error "fromLeft on Right"
+
+    fromRight (Right a) = a
+    fromRight (Left _)  = error "fromRight on Left"
+
     shouldDiscover :: CabalUnit -> Bool
     shouldDiscover unit = Discovered == foldMap1 (`discoversUnit` unit) hpackToDiscover
-
-    partitionEithers :: [Either a b] -> ([a], [b])
-    partitionEithers = foldr (\x (ls, rs) -> case x of Left l -> (l:ls, rs); Right r -> (ls, r:rs)) ([], [])
 
     validateModule :: Module -> IO (Maybe Module)
     validateModule m@Module{path} = case path of
@@ -161,82 +180,78 @@ discoverHpackModules HpackDiscoverOpts{..} yamlFile = do
 
     globSourceDir :: GlobSpec -> IO [Module]
     globSourceDir GlobSpec{..} = do
-      hsFiles <- findHsFilesExcluding gsSrcDir gsExcludeDirs
-      let excludeNorms = map normalise gsExcludeFiles
-      pure [ Module { name = pathToModuleName gsSrcDir f, path = ModuleFile f }
+      let srcDirFP = T.unpack gsSrcDir
+      hsFiles <- findHsFilesExcluding srcDirFP (V.toList $ V.map T.unpack gsExcludeDirs)
+      let excludeNorms = V.map (normalise . T.unpack) gsExcludeFiles
+      pure [ Module { name = pathToModuleName srcDirFP f, path = ModuleFile f }
            | f <- hsFiles
-           , normalise f `notElem` excludeNorms
+           , normalise f `V.notElem` excludeNorms
            ]
 
     -- | Compute exclude dirs: for each source dir, exclude other source dirs
     -- that are proper subdirectories of it.
-    mkGlobSpecs :: [FilePath] -> [FilePath] -> [GlobSpec]
-    mkGlobSpecs excludeFiles srcDirs =
-        [ GlobSpec
-            { gsSrcDir = sd
-            , gsExcludeDirs = filter (isProperSubdirOf sd) srcDirs
-            , gsExcludeFiles = excludeFiles
-            }
-        | sd <- srcDirs
-        ]
+    mkGlobSpecs :: V.Vector Text -> V.Vector Text -> V.Vector (Either GlobSpec Module)
+    mkGlobSpecs excludeFiles srcDirs = V.map mkOne srcDirs
+      where
+        mkOne sd = Left GlobSpec
+          { gsSrcDir = sd
+          , gsExcludeDirs = V.filter (isProperSubdirOf sd) srcDirs
+          , gsExcludeFiles = excludeFiles
+          }
 
-    isProperSubdirOf :: FilePath -> FilePath -> Bool
+    isProperSubdirOf :: Text -> Text -> Bool
     isProperSubdirOf parent child =
-        let p = normalise parent ++ "/"
-            c = normalise child
-        in c /= normalise parent && p `isPrefixOf` c
+        let p = parent <> "/"
+        in child /= parent && p `T.isPrefixOf` child
 
-    discoverLibrary :: Maybe String -> Maybe ComponentConfig -> [Either GlobSpec Module]
-    discoverLibrary _ Nothing = []
+    discoverLibrary :: Maybe Text -> Maybe ComponentConfig -> V.Vector (Either GlobSpec Module)
+    discoverLibrary _ Nothing = V.empty
     discoverLibrary libName (Just ComponentConfig{..})
-      | not (shouldDiscover (CabalLibraryUnit libName)) = []
+      | not (shouldDiscover (CabalLibraryUnit (T.unpack <$> libName))) = V.empty
       | Just exposed <- ccExposedModules =
-          let others = fromMaybe [] ccOtherModules
-          in concatMap (fmap Right . modulesFromExplicit ccSourceDirs) (exposed ++ others)
-      | otherwise = map Left $ mkGlobSpecs [] ccSourceDirs
+          let others = fromMaybe V.empty ccOtherModules
+              allMods = exposed V.++ others
+          in V.concatMap (modulesFromExplicitV ccSourceDirs) allMods
+      | otherwise = mkGlobSpecs V.empty ccSourceDirs
 
-    discoverInternalLibraries :: Map String ComponentConfig -> [Either GlobSpec Module]
+    discoverInternalLibraries :: Map Text ComponentConfig -> V.Vector (Either GlobSpec Module)
     discoverInternalLibraries = Map.foldMapWithKey $ \n cfg ->
         discoverLibrary (Just n) (Just cfg)
 
-    discoverExecutables :: Map String ExecutableConfig -> [Either GlobSpec Module]
+    discoverExecutables :: Map Text ExecutableConfig -> V.Vector (Either GlobSpec Module)
     discoverExecutables = Map.foldMapWithKey $ \n ExecutableConfig{..} ->
-        if not (shouldDiscover (CabalExecutableUnit n)) then [] else
-        let mainFile = case ecMain of
-              Just mf -> mf
-              Nothing -> "Main.hs"
-            mainPath = head ecSourceDirs </> mainFile
-            mainMod = Right Module
-              { name = fromString $ n ++ "-Main"
-              , path = ModuleFile mainPath
+        if not (shouldDiscover (CabalExecutableUnit (T.unpack n))) then V.empty else
+        let mainFile = fromMaybe "Main.hs" ecMain
+            mainPath = V.head ecSourceDirs </+> mainFile
+            mainMod = V.singleton $ Right Module
+              { name = ModuleName (n <> "-Main")
+              , path = ModuleFile (T.unpack mainPath)
               }
             otherMods = case ecOtherModules of
-              Just others -> concatMap (fmap Right . modulesFromExplicit ecSourceDirs) others
-              Nothing     -> map Left $ mkGlobSpecs [mainPath] ecSourceDirs
-        in mainMod : otherMods
+              Just others -> V.concatMap (modulesFromExplicitV ecSourceDirs) others
+              Nothing     -> mkGlobSpecs (V.singleton mainPath) ecSourceDirs
+        in mainMod V.++ otherMods
 
-    discoverTests :: Map String ExecutableConfig -> [Either GlobSpec Module]
+    discoverTests :: Map Text ExecutableConfig -> V.Vector (Either GlobSpec Module)
     discoverTests = Map.foldMapWithKey $ \n ExecutableConfig{..} ->
-        if not (shouldDiscover (CabalTestsUnit n)) then [] else
-        let mainFile = case ecMain of
-              Just mf -> mf
-              Nothing -> "Main.hs"
-            mainPath = head ecSourceDirs </> mainFile
+        if not (shouldDiscover (CabalTestsUnit (T.unpack n))) then V.empty else
+        let mainFile = fromMaybe "Main.hs" ecMain
+            mainPath = V.head ecSourceDirs </+> mainFile
         in case ecOtherModules of
-          Just others -> concatMap (fmap Right . modulesFromExplicit ecSourceDirs) others
-          Nothing     -> map Left $ mkGlobSpecs [mainPath] ecSourceDirs
+          Just others -> V.concatMap (modulesFromExplicitV ecSourceDirs) others
+          Nothing     -> mkGlobSpecs (V.singleton mainPath) ecSourceDirs
 
-    modulesFromExplicit :: [FilePath] -> String -> [Module]
-    modulesFromExplicit srcDirs modName
-      | "Paths_" `T.isPrefixOf` T.pack modName =
-          [Module { name = fromString modName, path = ModuleNoFile }]
+    -- | Create Right Module candidates for an explicit module name across source dirs.
+    modulesFromExplicitV :: V.Vector Text -> Text -> V.Vector (Either GlobSpec Module)
+    modulesFromExplicitV srcDirs modName
+      | "Paths_" `T.isPrefixOf` modName =
+          V.singleton $ Right Module { name = ModuleName modName, path = ModuleNoFile }
       | otherwise =
-          [ Module
-            { name = fromString modName
-            , path = ModuleFile $ sd </> map (\c -> if c == '.' then '/' else c) modName ++ ".hs"
-            }
-          | sd <- srcDirs
-          ]
+          let relPath = moduleNameToRelPath modName
+          in V.map (\sd -> Right Module
+                 { name = ModuleName modName
+                 , path = ModuleFile $ T.unpack (sd </+> relPath)
+                 }) srcDirs
 
 discoverHpackModuleGraph :: HpackDiscoverOpts -> FilePath -> IO CabalGraph
 discoverHpackModuleGraph opts@HpackDiscoverOpts{..} yamlFile = do
