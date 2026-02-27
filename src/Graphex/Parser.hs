@@ -70,19 +70,21 @@ extractImports = mapMaybe (parseImportLine . TL.toStrict)
                . TL.lines
 
 -- | Remove lines that fall inside block comments.
+-- Uses the @foldr@-with-accumulator trick: the fold builds a function
+-- @Bool -> [TL.Text]@ that threads the "in comment" state left-to-right.
 stripBlockComments :: [TL.Text] -> [TL.Text]
-stripBlockComments = go False
+stripBlockComments lines = foldr step (const []) lines False
     where
-        go _ [] = []
-        go True (l:ls)
-            | TL.isInfixOf "-}" l = go False ls
-            | otherwise           = go True ls
-        go False (l:ls)
-            | isOpenComment l = go (not $ TL.isInfixOf "-}" l) ls
-            | otherwise       = l : go False ls
+        step line rest inComment
+            | inComment =
+                rest (not $ TL.isInfixOf "-}" line)
+            | isOpenComment line =
+                rest (not $ TL.isInfixOf "-}" line)
+            | otherwise =
+                line : rest False
 
-        isOpenComment l = let s = TL.stripStart l
-                          in TL.isPrefixOf "{-" s && not (TL.isPrefixOf "{-#" s)
+        isOpenComment line = let stripped = TL.stripStart line
+                             in TL.isPrefixOf "{-" stripped && not (TL.isPrefixOf "{-#" stripped)
 
 isImportLine :: TL.Text -> Bool
 isImportLine = TL.isPrefixOf "import "
@@ -90,7 +92,7 @@ isImportLine = TL.isPrefixOf "import "
 -- | Detect lines that are definitely top-level code declarations,
 -- signaling the end of the import section.
 isCodeLine :: TL.Text -> Bool
-isCodeLine l = any (`TL.isPrefixOf` l)
+isCodeLine line = any (`TL.isPrefixOf` line)
     [ "data "
     , "type "
     , "newtype "
@@ -104,13 +106,13 @@ isCodeLine l = any (`TL.isPrefixOf` l)
     , "infixr "
     , "infix "
     ]
-    || isFunctionSig l
+    || isFunctionSig line
 
 -- | Detect top-level function signatures like @foo :: Type@.
 -- Matches lines where a lowercase identifier is followed by @::@.
 isFunctionSig :: TL.Text -> Bool
-isFunctionSig l = case TL.uncons l of
-    Just (c, _) | c >= 'a' && c <= 'z' || c == '_' -> TL.isInfixOf " :: " l
+isFunctionSig line = case TL.uncons line of
+    Just (ch, _) | ch >= 'a' && ch <= 'z' || ch == '_' -> TL.isInfixOf "::" line
     _ -> False
 
 parseFileImports :: FilePath -> IO [Import]
