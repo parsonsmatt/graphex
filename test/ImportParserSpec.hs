@@ -59,3 +59,26 @@ unit_parseWhereOnOwnLine = do
     assertEqual "" [Import "Data.Text" Nothing,
                     Import "Data.Map" Nothing,
                     Import "Data.Set" Nothing] got
+
+unit_parseEarlyTermination :: IO ()
+unit_parseEarlyTermination = do
+    got <- parseFileImports "testData/parseTests/EarlyTermination.hs"
+    assertEqual "should stop at data declaration"
+                    [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing] got
+
+unit_parseFunctionSigTermination :: IO ()
+unit_parseFunctionSigTermination = do
+    got <- parseFileImports "testData/parseTests/FunctionSigTermination.hs"
+    assertEqual "should stop at function signature"
+                    [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing,
+                    Import "Data.Set" Nothing] got
+
+unit_parseBlockCommentEdgeCases :: IO ()
+unit_parseBlockCommentEdgeCases = do
+    got <- parseFileImports "testData/parseTests/BlockCommentEdgeCases.hs"
+    assertEqual "should handle single-line and multi-line block comments"
+                    [Import "Data.Text" Nothing,
+                    Import "Data.Map" Nothing,
+                    Import "Data.Set" Nothing] got
