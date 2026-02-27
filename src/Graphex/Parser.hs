@@ -13,7 +13,9 @@
 -- graphex, this makes sense in a way - those are all still dependencies.
 module Graphex.Parser where
 
-import           Data.Maybe           (mapMaybe)
+import           Data.Char            (isLower)
+import           Data.Maybe           (listToMaybe, mapMaybe)
+import qualified Data.Set             as Set
 import           Data.String          (IsString)
 import           Data.Text            (Text)
 import qualified Data.Text            as T
@@ -89,30 +91,26 @@ stripBlockComments lines = foldr step (const []) lines False
 isImportLine :: TL.Text -> Bool
 isImportLine = TL.isPrefixOf "import "
 
+-- | Top-level declaration keywords that signal the end of the import section.
+codeKeywords :: Set.Set TL.Text
+codeKeywords = Set.fromList
+    [ "data", "type", "newtype", "class", "instance"
+    , "deriving", "pattern", "foreign", "default"
+    , "infixl", "infixr", "infix"
+    ]
+
 -- | Detect lines that are definitely top-level code declarations,
 -- signaling the end of the import section.
 isCodeLine :: TL.Text -> Bool
-isCodeLine line = any (`TL.isPrefixOf` line)
-    [ "data "
-    , "type "
-    , "newtype "
-    , "class "
-    , "instance "
-    , "deriving "
-    , "pattern "
-    , "foreign "
-    , "default "
-    , "infixl "
-    , "infixr "
-    , "infix "
-    ]
+isCodeLine line =
+    maybe False (`Set.member` codeKeywords) (listToMaybe $ TL.words line)
     || isFunctionSig line
 
 -- | Detect top-level function signatures like @foo :: Type@.
 -- Matches lines where a lowercase identifier is followed by @::@.
 isFunctionSig :: TL.Text -> Bool
 isFunctionSig line = case TL.uncons line of
-    Just (ch, _) | ch >= 'a' && ch <= 'z' || ch == '_' -> TL.isInfixOf "::" line
+    Just (ch, _) | isLower ch || ch == '_' -> TL.isInfixOf "::" line
     _ -> False
 
 parseFileImports :: FilePath -> IO [Import]
