@@ -13,16 +13,18 @@
 -- graphex, this makes sense in a way - those are all still dependencies.
 module Graphex.Parser where
 
-import           Data.Char            (isLower)
-import           Data.Maybe           (listToMaybe, mapMaybe)
-import qualified Data.Set             as Set
-import           Data.String          (IsString)
-import           Data.Text            (Text)
-import qualified Data.Text            as T
-import qualified Data.Text.Lazy       as TL
-import qualified Data.Text.Lazy.IO    as TLIO
+import           Control.Monad                  (filterM)
+import qualified Control.Monad.Trans.State.Lazy as SL
+import           Data.Char                      (isLower)
+import           Data.Maybe                     (listToMaybe, mapMaybe)
+import qualified Data.Set                       as Set
+import           Data.String                    (IsString)
+import           Data.Text                      (Text)
+import qualified Data.Text                      as T
+import qualified Data.Text.Lazy                 as TL
+import qualified Data.Text.Lazy.IO              as TLIO
 import           Data.Void
-import           System.IO            (IOMode(ReadMode), withFile)
+import           System.IO                      (IOMode (ReadMode), withFile)
 
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
@@ -88,6 +90,19 @@ stripBlockComments lines = foldr step (const []) lines False
         isOpenComment line = let stripped = TL.stripStart line
                              in TL.isPrefixOf "{-" stripped && not (TL.isPrefixOf "{-#" stripped)
 
+stripBlockCommentsS :: [TL.Text] -> [TL.Text]
+stripBlockCommentsS = flip SL.evalState False . filterM step
+  where
+    step line = do
+      let stripped = TL.stripStart line
+      let commentStarts = TL.isPrefixOf "{-" stripped && not (TL.isPrefixOf "{-#" stripped)
+      let commentEnds = TL.isInfixOf "-}" line
+      wasInComment <- SL.get
+      let inComment = wasInComment || commentStarts
+      let stillInComment = inComment && not commentEnds
+      SL.put stillInComment
+      pure (not inComment)
+
 isImportLine :: TL.Text -> Bool
 isImportLine = TL.isPrefixOf "import "
 
@@ -111,7 +126,7 @@ isCodeLine line =
 isFunctionSig :: TL.Text -> Bool
 isFunctionSig line = case TL.uncons line of
     Just (ch, _) | isLower ch || ch == '_' -> TL.isInfixOf "::" line
-    _ -> False
+    _                                      -> False
 
 parseFileImports :: FilePath -> IO [Import]
 parseFileImports fp =
