@@ -73,25 +73,8 @@ extractImports = mapMaybe (parseImportLine . TL.toStrict)
                . stripBlockComments
                . TL.lines
 
--- | Remove lines that fall inside block comments.
--- Uses the @foldr@-with-accumulator trick: the fold builds a function
--- @Bool -> [TL.Text]@ that threads the "in comment" state left-to-right.
 stripBlockComments :: [TL.Text] -> [TL.Text]
-stripBlockComments lines = foldr step (const []) lines False
-    where
-        step line rest inComment
-            | inComment =
-                rest (not $ TL.isInfixOf "-}" line)
-            | isOpenComment line =
-                rest (not $ TL.isInfixOf "-}" line)
-            | otherwise =
-                line : rest False
-
-        isOpenComment line = let stripped = TL.stripStart line
-                             in TL.isPrefixOf "{-" stripped && not (TL.isPrefixOf "{-#" stripped)
-
-stripBlockCommentsS :: [TL.Text] -> [TL.Text]
-stripBlockCommentsS = flip SL.evalState False . filterM step
+stripBlockComments = flip SL.evalState False . filterM step
   where
     step line = do
       let stripped = TL.stripStart line
