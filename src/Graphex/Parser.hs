@@ -103,7 +103,7 @@ codeKeywords = Set.fromList
 -- signaling the end of the import section.
 isCodeLine :: TL.Text -> Bool
 isCodeLine line =
-    maybe False (`Set.member` codeKeywords) (listToMaybe $ TL.words line)
+    maybe False (\firstWord -> firstWord `Set.member` codeKeywords && firstWord `TL.isPrefixOf` line) (listToMaybe $ TL.words line)
     || isFunctionSig line
 
 -- | Detect top-level function signatures like @foo :: Type@.
