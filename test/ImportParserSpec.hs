@@ -82,3 +82,12 @@ unit_parseBlockCommentEdgeCases = do
                     [Import "Data.Text" Nothing,
                     Import "Data.Map" Nothing,
                     Import "Data.Set" Nothing] got
+
+unit_parseExplicitPatternImports :: IO ()
+unit_parseExplicitPatternImports = do
+    got <- parseFileImports "testData/parseTests/ExplicitPatternImport.hs"
+    assertEqual "should handle explicit pattern imports"
+                    [Import "FirstModule" Nothing,
+                    Import "SecondModule" Nothing,
+                    Import "ThirdModule" Nothing,
+                    Import "FourthModule" Nothing] got
